@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Jogo dos Corações - Paredes Móveis</title>
+<style>
+  html,body {
+    height:100%; margin:0;
+    display:flex; align-items:center; justify-content:center;
+    background: #f4f7fb; font-family: system-ui, sans-serif;
+  }
+  #game {
+    border: 2px solid #cbd5e1;
+    box-shadow: 0 6px 20px rgba(20,30,60,0.08);
+    background: linear-gradient(#e9f2ff, #fff);
+  }
+  .ui {
+    position: absolute; top:12px; left:12px;
+    color:#223; font-size:18px;
+  }
+  .hint {
+    position:absolute; right:12px; top:12px;
+    color:#556; font-size:14px;
+  }
+  .win, .intro {
+    position:absolute; top:50%; left:50%;
+    transform:translate(-50%, -50%);
+    font-size:28px; color:#d43a67;
+    background:white; padding:20px 30px;
+    border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.15);
+    text-align:center; max-width:500px;
+  }
+  .win { display:none; }
+</style>
+</head>
+<body>
+
+<div style="position:relative;">
+  <canvas id="game" width="900" height="600"></canvas>
+  <div class="ui" id="score">Acertos: 0 / 10</div>
+  <div class="hint" id="hint">Clica / toca para disparar um coração 💘</div>
+  <div class="intro" id="intro"></div>
+  <div class="win" id="win">Coração conquistado, AAAAIIIINNNNN</div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  const shooter = { x: 100, y: H - 160 };
+  const target = {
+    x: W - 200,
+    y: H - 200,
+    r: 80,
+    hit: false,
+    animY: 0
+  };
+
+  let hits = 0;
+  const goal = 10;
+  let gameWon = false;
+  let gameStarted = false;
+  let glowLevel = 0;
+  const scoreEl = document.getElementById('score');
+  const winEl = document.getElementById('win');
+  const introEl = document.getElementById('intro');
+  const hintEl = document.getElementById('hint');
+
+  const gravity = 0.4;
+  const speed = 18;
+  const hearts = [];
+  const particles = [];
+  let shooterTilt = 0;
+  let shooterAnimTimer = 0;
+
+  // Imagens maiores para menino e menina
+  const imgMenino = new Image();
+  imgMenino.src = "menino.png";
+  const imgMenina = new Image();
+  imgMenina.src = "menina.png";
+
+  // Paredes móveis
+  // vertical: x fixo, y variável
+  let wallV = { x: 450, y: 100, w: 20, h: 250, vy: 2 };
+  // horizontal: y fixo, x variável
+  let wallH = { x: 200, y: 300, w: 300, h: 20, vx: 3 };
+
+  // Após cada acerto, velocidade e direção podem mudar para variar desafio
+  function resetWallsSpeed() {
+    // aleatório entre 1.5 e 3.5 e direção aleatória
+    wallV.vy = (Math.random()*2 + 1.5) * (Math.random() < 0.5 ? 1 : -1);
+    wallH.vx = (Math.random()*2 + 1.5) * (Math.random() < 0.5 ? 1 : -1);
+  }
+  resetWallsSpeed();
+
+  function drawShooter() {
+    ctx.save();
+    ctx.translate(shooter.x - 60, shooter.y - 160);
+    ctx.rotate(shooterTilt);
+    ctx.drawImage(imgMenino, -50, 0, 100, 180);
+    ctx.restore();
+
+    ctx.fillStyle = "#7aa1ff";
+    roundRect(ctx, shooter.x - 16, shooter.y + 38, 64, 18, 8, true, false);
+
+    ctx.save();
+    ctx.translate(shooter.x + 12, shooter.y + 16);
+    ctx.rotate(-0.15);
+    ctx.fillStyle = "#4b6fbf";
+    roundRect(ctx, -8, -8, 24, 16, 6, true, false);
+    ctx.restore();
+
+    ctx.fillStyle = "#2b3a66";
+    ctx.font = "24px serif";
+    ctx.fillText("💘", shooter.x - 12, shooter.y + 10);
+  }
+
+  function roundRect(ctx, x, y, w, h, r, fill, stroke) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    if (fill) ctx.fill();
+    if (stroke) ctx.stroke();
+  }
+
+  function spawnHeart(targetX, targetY) {
+    if (!gameStarted || gameWon) return;
+    const dx = targetX - shooter.x;
+    const dy = targetY - shooter.y;
+    const d = Math.sqrt(dx*dx + dy*dy) || 1;
+    const vx = (dx / d) * speed;
+    const vy = (dy / d) * speed;
+    hearts.push({
+      x: shooter.x + 20,
+      y: shooter.y - 10,
+      vx, vy,
+      r: 20,
+      life: 0
+    });
+    shooterTilt = -0.2;
+    shooterAnimTimer = 10;
+  }
+
+  function checkCollisionCircleRect(cx, cy, radius, rx, ry, rw, rh) {
+    let testX = cx;
+    let testY = cy;
+    if (cx < rx) testX = rx;
+    else if (cx > rx+rw) testX = rx+rw;
+    if (cy < ry) testY = ry;
+    else if (cy > ry+rh) testY = ry+rh;
+    const distX = cx-testX;
+    const distY = cy-testY;
+    const distance = Math.sqrt((distX*distX) + (distY*distY));
+    return distance <= radius;
+  }
+
+  function checkCollision(h, tgt) {
+    const dx = h.x - tgt.x;
+    const dy = h.y - tgt.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    return dist < (h.r + tgt.r*0.65);
+  }
+
+  function spawnParticles(x,y,n=30) {
+    for (let i=0;i<n;i++){
+      const a = Math.random()*Math.PI*2;
+      const s = Math.random()*5 + 1;
+      particles.push({
+        x,y,
+        vx: Math.cos(a)*s,
+        vy: Math.sin(a)*s - 2,
+        life: Math.random()*50 + 30,
+        size: Math.random()*8 + 4
+      });
+    }
+  }
+
+  function update() {
+    if (shooterAnimTimer > 0) {
+      shooterAnimTimer--;
+      if (shooterAnimTimer <= 0) shooterTilt = 0;
+    }
+
+    // Move paredes móveis e controla limites para rebater
+    wallV.y += wallV.vy;
+    if (wallV.y < 50) {
+      wallV.y = 50;
+      wallV.vy *= -1;
+    } else if (wallV.y + wallV.h > H - 100) {
+      wallV.y = H - 100 - wallV.h;
+      wallV.vy *= -1;
+    }
+
+    wallH.x += wallH.vx;
+    if (wallH.x < 150) {
+      wallH.x = 150;
+      wallH.vx *= -1;
+    } else if (wallH.x + wallH.w > W - 150) {
+      wallH.x = W - 150 - wallH.w;
+      wallH.vx *= -1;
+    }
+
+    for (let i = hearts.length-1; i>=0; i--) {
+      const h = hearts[i];
+      h.vy += gravity;
+      h.x += h.vx;
+      h.y += h.vy;
+      h.life++;
+
+      // colisão com paredes móveis
+      if (checkCollisionCircleRect(h.x, h.y, h.r, wallV.x, wallV.y, wallV.w, wallV.h)) {
+        h.vx *= -0.95;
+        if (h.x < wallV.x) h.x = wallV.x - h.r;
+        else h.x = wallV.x + wallV.w + h.r;
+      }
+      if (checkCollisionCircleRect(h.x, h.y, h.r, wallH.x, wallH.y, wallH.w, wallH.h)) {
+        h.vy *= -0.95;
+        if (h.y < wallH.y) h.y = wallH.y - h.r;
+        else h.y = wallH.y + wallH.h + h.r;
+      }
+
+      if (!target.hit && checkCollision(h, target)) {
+        target.hit = true;
+        target.animY = -15;
+        hits++;
+        glowLevel = Math.min(30, glowLevel + 3);
+        scoreEl.textContent = `Acertos: ${hits} / ${goal}`;
+        spawnParticles(target.x, target.y, 50);
+        hearts.splice(i,1);
+        setTimeout(()=> { target.hit = false; }, 400);
+
+        // muda velocidade e direção das paredes pra variar
+        resetWallsSpeed();
+
+        if (hits >= goal && !gameWon) {
+          gameWon = true;
+          winEl.style.display = "block";
+        }
+        continue;
+      }
+
+      if (h.x < -100 || h.x > W+100 || h.y > H+200 || h.life > 800) {
+        hearts.splice(i,1);
+      }
+    }
+
+    for (let i = particles.length-1; i>=0; i--) {
+      const p = particles[i];
+      p.vy += 0.15;
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life -= 1;
+      if (p.life <= 0) particles.splice(i,1);
+    }
+
+    if (target.animY < 0) {
+      target.animY += 2;
+      if (target.animY > 0) target.animY = 0;
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0,0,W,H);
+
+    ctx.fillStyle = "#eef6ff";
+    ctx.fillRect(0, H-80, W, 80);
+    ctx.fillStyle = "#dbeeff";
+    ctx.fillRect(0, H-80, W, 6);
+
+    // desenha paredes móveis
+    ctx.fillStyle = "#888";
+    ctx.fillRect(wallV.x, wallV.y, wallV.w, wallV.h);
+    ctx.fillRect(wallH.x, wallH.y, wallH.w, wallH.h);
+
+    // Menina com brilho
+    ctx.save();
+    ctx.translate(target.x, target.y + target.animY);
+    ctx.shadowBlur = glowLevel;
+    ctx.shadowColor = "rgba(255,100,150,0.8)";
+    ctx.drawImage(imgMenina, -60, -130, 120, 180);
+    ctx.restore();
+
+    drawShooter();
+
+    ctx.font = "40px serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const h of hearts) {
+      ctx.fillText("❤️", h.x, h.y);
+    }
+
+    for (const p of particles) {
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.life/40));
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+      ctx.fillStyle = "#ff6fa3";
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+  loop();
+
+  function getPointerPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    if (e.touches && e.touches[0]) {
+      return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
+    } else {
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+  }
+
+  canvas.addEventListener('mousedown', (e) => {
+    const p = getPointerPos(e);
+    spawnHeart(p.x, p.y);
+  });
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const p = getPointerPos(e);
+    spawnHeart(p.x, p.y);
+  }, { passive:false });
+
+  function startCountdown() {
+    let count = 3;
+    introEl.textContent = `Missão: conquistar o coração da Letícia\n${count}`;
+    const timer = setInterval(() => {
+      count--;
+      if (count > 0) {
+        introEl.textContent = `Missão: conquistar o coração da Letícia\n${count}`;
+      } else {
+        clearInterval(timer);
+        introEl.style.display = 'none';
+        gameStarted = true;
+      }
+    }, 1000);
+  }
+  startCountdown();
+
+})();
+</script>
+
+</body>
+</html>
